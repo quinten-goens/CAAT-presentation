@@ -1,0 +1,478 @@
+---
+title: "ICAO GANP KPI"
+author: "EUROCONTROL, Performance Review Unit (PRU)"
+date: '2022-12-12'
+execute:
+  warning: false
+  error: false
+format:
+  pdf: 
+    toc: true
+    number-sections: true
+    colorlinks: true
+  html: 
+    toc: true
+    number-sections: true
+    colorlinks: true
+params:
+  author_firstname: Quinten
+  author_surname: Goens
+  author_unit: ESGD/AIU/OPS
+  author_email: quinten.goens@eurocontrol.int
+urlcolor: blue
+fontsize: 12pt
+---
+
+
+```{r}
+#| echo: false
+library(tidyverse)
+library(glue)
+library(lubridate)
+library(arrow)
+```
+
+## About the data
+
+The data set contains only departures. There are four columns. 
+
+* **APT** - Airport
+
+* **AOBT** - Actual off-block time
+
+* **SOBT** - Scheduled off-block time
+
+* **ATOT** - Actual take-off time
+
+```{r}
+data <- read_csv2("data/EGLL_departure_data.csv")
+```
+```{r}
+#| echo: false
+knitr::kable(head(data), col.names = names(data))
+```
+
+
+```{r}
+#| echo: false
+print(str_glue("There are {nrow(data)} individual flights in the dataset."))
+```
+
+## KPI01: Departure punctuality
+### Exclude non-scheduled departures
+
+```{r}
+data_filtered <- data %>% 
+  filter(!is.na(SOBT))
+```
+
+```{r}
+#| echo: false
+knitr::kable(head(data_filtered), col.names = names(data_filtered))
+```
+
+
+```{r}
+#| echo: false
+print(str_glue("There are {nrow(data_filtered)} individual flights in the dataset."))
+```
+
+### Categorize each scheduled departure as on-time or not
+
+This can be done by the various variants. 
+
+* **Variant 1A** – % of departures within ± 5 minutes of scheduled time of departure
+
+* **Variant 1B** – % of departures delayed ≤ 5 minutes versus schedule
+
+* **Variant 2A** – % of departures within ± 15 minutes of scheduled time of departure
+
+* **Variant 2B** – % of departures delayed ≤ 15 minutes versus schedule
+
+For our example we will use **variant 1B**.
+
+```{r}
+data_processed <- data_filtered %>% 
+  mutate(
+      DIFF = difftime(AOBT, SOBT, units = "mins") %>% as.numeric(),
+      ON_TIME = DIFF <= 5)
+```
+
+```{r}
+#| echo: false
+knitr::kable(head(data_processed), col.names = names(data_processed))
+```
+
+
+### Compute the KPI 
+I.e. the number of on-time departures divided by total number of scheduled departures.
+
+```{r}
+data_kpi01 <- data_processed %>% 
+  group_by(ON_TIME) %>% 
+  summarize(
+    COUNT_ON_TIME = n()
+  ) %>% 
+  mutate(
+    KPI01 = COUNT_ON_TIME / sum(COUNT_ON_TIME) * 100
+  ) %>% 
+  filter(ON_TIME == TRUE) %>% 
+  select(ON_TIME, KPI01)
+```
+```{r}
+#| echo: false
+knitr::kable(head(data_kpi01), col.names = names(data_kpi01))
+```
+
+
+### Additional: KPI01 per month
+
+Starting from data_processed: 
+
+```{r}
+#| echo: false
+knitr::kable(head(data_processed), col.names = names(data_processed))
+```
+
+We can group by year and month to calculate the KPI. 
+
+```{r}
+data_monthly <- data_processed %>% 
+  mutate(
+    YEAR = year(SOBT),
+    MONTH = month(SOBT)) %>% 
+  group_by(
+    YEAR,
+    MONTH,
+    ON_TIME) %>% 
+  summarize(
+    COUNT_ON_TIME = n(),
+  ) %>% 
+  group_by(
+    YEAR,
+    MONTH,
+  ) %>% 
+  summarize(
+    ON_TIME = ON_TIME,
+    KPI01 = COUNT_ON_TIME / sum(COUNT_ON_TIME) * 100
+  ) %>% 
+  filter(ON_TIME == TRUE)
+```
+```{r}
+#| echo: false
+knitr::kable(head(data_monthly), col.names = names(data_monthly))
+```
+
+Let us visualize this using **ggplot**: 
+
+```{r}
+#| layout-nrow: 2
+
+data_monthly %>% 
+  ggplot(aes(x = make_date(YEAR, factor(MONTH)), y = KPI01)) +
+  geom_point() + 
+  geom_line() +
+  geom_smooth(se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Departure punctuality (KPI01) per month",
+    x = "Time",
+    y = "Percentage of scheduled flights on time (%)"
+  )
+
+data_monthly %>% 
+  ggplot(aes(x = MONTH, y = KPI01, color = factor(YEAR))) +
+  geom_smooth(se = FALSE) + 
+  theme_minimal() +
+  labs(
+    title = "Departure punctuality (KPI01) per month per year",
+    x = "Month",
+    y = "Percentage of scheduled flights on time (%)",
+    color = "Year"
+  ) + scale_x_continuous("Month", 1:12, 1:12)
+
+
+```
+
+Influences of Departure Punctuality (KPI01) could be:
+
+* Weather
+* Seasonality
+* External influences (e.g. Covid-19 or Russian war in Ukraine)
+* ...
+
+```{r}
+data_processed %>% 
+  mutate(
+    YEAR = year(SOBT),
+    MONTH = month(SOBT)) %>% 
+  group_by(YEAR,MONTH) %>% 
+  summarize(
+    COUNT = n()
+  ) %>% 
+  ggplot(aes(x=make_date(YEAR,factor(MONTH)), y = COUNT)) + 
+  geom_line() +
+  geom_point() + 
+  theme_minimal() +
+  labs(
+    title = "Number of monthly flights affected by Covid-19",
+    x = "Time",
+    y = "Number of flights",
+  )
+```
+
+## KPI02: Taxi-out additional time
+
+###  Select departing flights, exclude helicopters
+
+This is already done for our dataset. However, if this would not be done you should have two additional columns: 
+
+* **SRC** which would indicate whether it is an arrival (`ARR`) or departure (`DEP`).
+* **TYPE** which would have e.g. values such as `IFR flight` or `helicopter`.
+
+```{r}
+#| echo: false
+data_tmp <- data %>%
+  mutate(SRC = "DEP",
+         TYPE = "IFR flight")
+knitr::kable(head(data_tmp), col.names = names(data_tmp))
+```
+
+You then filter out what you want and select the appropriate columns.
+
+```{r}
+#| eval: false
+data_filtered <- data %>%
+  filter(SRC == "DEP",
+         TYPE == "IFR flight") %>%
+  select(APT, AOBT, SOBT, ATOT)
+```
+
+```{r}
+#| echo: false
+data_filtered <- data
+knitr::kable(head(data), col.names = names(data))
+```
+
+```{r}
+#| echo: false
+print(str_glue("There are {nrow(data_filtered)} individual flights in the dataset."))
+```
+
+### Compute actual taxi-out duration: ATOT minus AOBT
+
+```{r}
+data_processed <- data_filtered %>%
+  mutate(
+    TAXI_OUT_TIME = difftime(ATOT, AOBT, units = "mins") %>% as.numeric())
+```
+
+```{r}
+#| echo: false
+knitr::kable(head(data_processed), col.names = names(data_processed))
+```
+### Compute additional taxi-out time: actual taxi-out duration minus unimpeded taxi-out time
+
+#### Calculate unimpeded taxi-out time
+
+```{r}
+UNIMP_TAXI_TIME = quantile(data_processed$TAXI_OUT_TIME, 0.2, na.rm = TRUE)
+
+print(str_glue("The unimpeded reference time is {UNIMP_TAXI_TIME} min."))
+```
+```{r}
+data_processed %>%
+  ggplot(aes(x = TAXI_OUT_TIME)) +
+  geom_histogram(bins = 200) +
+  coord_cartesian(xlim = c(8, 45)) +
+  geom_vline(xintercept = UNIMP_TAXI_TIME, color = "red") +
+  labs(title = "Distribution Taxi-Out Time (Red line - 20th percentile)",
+       y = "Count",
+       x = "Taxi-out time (min)") + 
+  theme_minimal()
+```
+
+#### Compute additional taxi-out time
+
+I.e. the actual taxi-out duration minus unimpeded taxi-out time. Note: We apply variant 1. 
+
+```{r}
+data_processed <- data_processed %>%
+  mutate(TAXI_OUT_ADD_TIME = TAXI_OUT_TIME - UNIMP_TAXI_TIME)
+```
+
+```{r}
+#| echo: false
+knitr::kable(head(data_processed), col.names = names(data_processed))
+```
+
+### Compute the KPI
+I.e. sum of additional taxi-out times divided by number of IFR departures. 
+
+```{r}
+KPI02 <- sum(data_processed$TAXI_OUT_TIME,na.rm=TRUE)/nrow(data_processed)
+
+print(str_glue("The average additional taxi-out time is {KPI02} minutes."))
+```
+
+## Additional notes
+
+### Why R
+
+* Transparency 
+* Trace-ability
+* Reproducability
+
+Using the code above, we can generalize this and capture this in re-useable functions.
+
+```{r}
+calc_kpi01 <-
+  function(data,
+           STD_COL = "STD",
+           AOBT_COL = "AOBT",
+           GROUP_COLS = c("AIRPORT"),
+           VARIANT = "1A") {
+    data %>%
+      filter(!is.na(.data[[STD_COL]])) %>%
+      group_by(across({
+        {
+          GROUP_COLS
+        }
+      })) %>%
+      summarize(
+        DIFF = difftime(.data[[AOBT_COL]], .data[[STD_COL]], units = "mins") %>% as.numeric(),
+        ON_TIME = case_when(
+          VARIANT == "1A" ~ abs(DIFF) <= 5,
+          VARIANT == "1B" ~ DIFF <= 5,
+          VARIANT == "2A" ~ abs(DIFF) <= 15,
+          VARIANT == "2B" ~ DIFF <= 15,
+        )
+      ) %>%
+      group_by(across({
+        {
+          GROUP_COLS
+        }
+      }), ON_TIME) %>%
+      summarise(KPI01 = n()) %>%
+      group_by(across({
+        {
+          GROUP_COLS
+        }
+      })) %>%
+      summarise(
+        COUNT = KPI01,
+        ON_TIME = ON_TIME,
+        KPI01 = KPI01 / sum(KPI01) * 100
+      ) %>%
+      mutate(
+        STD_COL = c(STD_COL, rep(NA, n() - 1)),
+        AOBT_COL = c(AOBT_COL, rep(NA, n() - 1)),
+        GROUP_COLS = c(glue_collapse(GROUP_COLS,  sep = ', '), rep(NA, n() -
+                                                                     1)),
+        VARIANT = c(VARIANT, rep(NA, n() - 1))
+      )  %>% filter(ON_TIME == TRUE)
+  }
+
+calc_kpi02 <- function(data,
+                       HELICOPTER_COL = "HELICOPTER",
+                       AOBT_COL = "AOBT",
+                       ATOT_COL = "ATOT",
+                       VARIANT = "1",
+                       GROUP_COLS = c("AIRPORT"),
+                       DEPT_GATE_ID_COL = "DEPT_GATE_ID",
+                       TAKE_OFF_RW_ID_COL = "TAKE_OFF_RW_ID") {
+  GROUP_VARS <- unique(str_split(
+    case_when(
+      VARIANT == "1" ~ glue_collapse(c(GROUP_COLS), sep = ', '),
+      VARIANT == "2" ~ glue_collapse(c(
+        GROUP_COLS, DEPT_GATE_ID_COL, TAKE_OFF_RW_ID_COL
+      ),  sep = ', ')
+    ),
+    ', '
+  )[[1]])
+  
+  data_filtered <- data %>%
+    filter(get(HELICOPTER_COL) == FALSE) %>%
+    mutate(TAXI_OUT_TIME = difftime(.data[[ATOT_COL]], .data[[AOBT_COL]], units = "mins") %>% as.numeric())
+  
+  reference_times <- data_filtered %>%
+    group_by(across({
+      {
+        GROUP_VARS
+      }
+    })) %>%
+    summarise(UNIMP_TAXI_TIME = quantile(TAXI_OUT_TIME, 0.2, na.rm = TRUE))
+  
+  data_filtered %>%
+    left_join(reference_times, by = GROUP_VARS) %>%
+    mutate(TAXI_OUT_ADD_TIME = TAXI_OUT_TIME - UNIMP_TAXI_TIME) %>%
+    group_by(across({
+      {
+        GROUP_VARS
+      }
+    })) %>%
+    summarise(COUNT = n(),
+              KPI02 = sum(TAXI_OUT_ADD_TIME, na.rm = TRUE) / COUNT) %>%
+    ungroup() %>%
+    mutate(
+      HELICOPTER_COL = c(HELICOPTER_COL, rep(NA, n() - 1)),
+      AOBT_COL = c(AOBT_COL, rep(NA, n() - 1)),
+      ATOT_COL = c(ATOT_COL, rep(NA, n() - 1)),
+      VARIANT = c(VARIANT, rep(NA, n() - 1)),
+      GROUP_COLS = c(glue_collapse(GROUP_VARS,  sep = ', '), rep(NA, n() -
+                                                                   1)),
+      DEPT_GATE_ID_COL = c(DEPT_GATE_ID_COL, rep(NA, n() - 1)),
+      TAKE_OFF_RW_ID_COL = c(TAKE_OFF_RW_ID_COL, rep(NA, n() - 1)),
+    )
+}
+```
+
+### An example
+
+**Data input: **
+
+```{r}
+#| echo: false
+knitr::kable(head(data), col.names = names(data))
+```
+
+**Apply function:**
+
+```{r}
+data_tmp <- data %>%
+  mutate(YEAR = year(SOBT),
+         MONTH = month(SOBT),
+         HELICOPTER = FALSE) %>%
+  calc_kpi02(
+    HELICOPTER_COL = "HELICOPTER",
+    AOBT_COL = "AOBT",
+    ATOT_COL = "ATOT",
+    VARIANT = "1",
+    GROUP_COLS = c("YEAR", "MONTH")
+  ) 
+```
+
+**Output data:**
+
+```{r}
+#| echo: false
+knitr::kable(head(data_tmp), col.names = names(data_tmp))
+```
+
+**Visualize data:**
+
+```{r}
+data_tmp %>% 
+  ggplot(aes(x=MONTH, y=KPI02, color=factor(YEAR))) + 
+  geom_line() + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(
+    title = "Additional taxi-out time per month and year", 
+    x = "Month",
+    y = "Average additional taxi-out time (min)",
+    color = "Year"
+  ) + 
+  scale_x_continuous("Month", 1:12, 1:12)
+```
+
